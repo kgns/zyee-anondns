@@ -1,0 +1,7 @@
+Package: anondns
+Version: 1.0
+Architecture: arm_cortex-a7
+Section: net
+Priority: optional
+Maintainer: kgns
+Description: dnscrypt-proxy + dnsdist anonymized DNS / DoT front-end

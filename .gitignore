@@ -1,0 +1,19 @@
+# build output
+*.ipk
+.stage/
+
+# cross-built binaries and bundled libs (drop in at build time)
+package/data/opt/anondns/bin/*
+package/data/opt/anondns/lib/*
+!package/data/opt/anondns/bin/.gitkeep
+!package/data/opt/anondns/lib/.gitkeep
+
+# TLS secrets
+package/data/opt/anondns/etc/tls/*
+!package/data/opt/anondns/etc/tls/.gitkeep
+
+# runtime
+*.log
+
+# OpenWrt SDK extraction scratch
+tools/openwrt/.out/

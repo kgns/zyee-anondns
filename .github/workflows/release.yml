@@ -1,0 +1,93 @@
+name: build-and-release
+
+# Tag push (v1.2 -> version 1.2) builds + publishes a Release with the .ipk.
+# Manual run builds + uploads an artifact only (no release).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (no leading v)'
+        default: '1.0'
+
+permissions:
+  contents: write # needed to create the Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90 # first SDK build compiles boost/openssl/dnsdist
+    steps:
+      - uses: actions/checkout@v6
+
+      # The OpenWrt SDK image + build tree is large; reclaim runner disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install host build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends
+              patchelf binutils file qemu-user-static openssl
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then V="${GITHUB_REF_NAME#v}";
+          else V="${{ github.event.inputs.version }}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building anondns version: $V"
+
+      # Cross-compile dnscrypt-proxy + dnsdist for arm_cortex-a7, bundle libs,
+      # patchelf, dedup libc — all into package/data/opt/anondns/{bin,lib}.
+      - name: Cross-build binaries + bundle libs (OpenWrt SDK in Docker)
+        run: tools/openwrt/cross-build.sh
+
+      # The release artifact ships a PLACEHOLDER self-signed cert so the DU is
+      # installable/testable; operators must replace it with their own and rebuild.
+      - name: Generate placeholder TLS cert
+        run: tools/gen-selfsigned-cert.sh dot.example.invalid
+
+      - name: Assemble .ipk
+        run: VER="${{ steps.ver.outputs.version }}" ./build.sh
+
+      - name: Smoke-test binaries under qemu (arm)
+        run: |
+          cd package/data/opt/anondns
+          qemu-arm-static lib/ld-musl-armhf.so.1 --library-path lib bin/dnsdist --version
+          qemu-arm-static lib/ld-musl-armhf.so.1 --library-path lib bin/dnscrypt-proxy -version
+
+      - name: Checksums
+        run: sha256sum anondns_*_arm_cortex-a7.ipk | tee SHA256SUMS
+
+      - name: Upload build artifact (every run)
+        uses: actions/upload-artifact@v7
+        with:
+          name: anondns-ipk
+          path: |
+            anondns_*_arm_cortex-a7.ipk
+            SHA256SUMS
+
+      - name: Publish Release (tags only)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            anondns_*_arm_cortex-a7.ipk
+            SHA256SUMS
+          generate_release_notes: true
+          body: |
+            **anondns** — ZyEE Deployment Unit for the Zyxel Execution Environment (ZyEE) on compatible Zyxel routers.
+            (anonymized DNSCrypt upstream + DoT front-end on `:853`).
+
+            ### Install (router web UI → Deployment Unit tab)
+            Host the file under its **exact** name `anondns_${{ steps.ver.outputs.version }}_arm_cortex-a7.ipk`
+            (zyeed verifies the install by the filename prefix — do **not** rename it),
+            UUID = any unique 4×4-hex, Execution Environment = `anondns`.
+
+            ### ⚠ TLS cert is a placeholder
+            This build bundles a self-signed cert `CN=dot.example.invalid`. Before real
+            use, replace `/opt/anondns/etc/tls/{fullchain,privkey}.pem` with your own
+            (`tools/gen-selfsigned-cert.sh dot.yourhost` or a Let's Encrypt cert) and rebuild.

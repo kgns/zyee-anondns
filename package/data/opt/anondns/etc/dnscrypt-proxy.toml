@@ -1,0 +1,153 @@
+##############################################################################
+# anondns / dnscrypt-proxy — region-agnostic, anonymized DNSCrypt resolver.
+#
+# Design: this container may run in ANY region, so we do NOT pin region-specific
+# servers. Instead we let dnscrypt-proxy load the full public list, latency-probe
+# it at startup, and adaptively load-balance to the fastest healthy resolvers —
+# reached anonymously through a geographically diverse set of relays. The
+# latency estimator + skip_incompatible mean it auto-adapts wherever it boots.
+##############################################################################
+
+listen_addresses = ['0.0.0.0:5300']
+
+# Memory cap: keep the client/cache tables small.
+max_clients = 32
+
+## ---- Server selection (bounded, but globally diverse) --------------------
+# We do NOT leave this unset. With the full public list, dnscrypt-proxy latency-
+# probes EVERY eligible resolver at startup (hundreds of concurrent DNSCrypt
+# handshakes); that burst of sockets/buffers — on top of the mmap'd binaries —
+# pushed the 60 MB container cgroup over its limit and got OOM-killed.
+#
+# Instead we pin a small set spread across continents (N.America / Europe / Asia /
+# Oceania / Middle East / S.America). dnscrypt-proxy still latency-ranks and picks
+# the fastest of these for wherever the box runs, so it stays region-agnostic — it
+# just probes ~12 servers instead of hundreds, which keeps peak memory well under
+# the cap. Adjust/extend against the live public-resolvers.md if any retire (these
+# were all confirmed reachable+anonymizable from the device).
+server_names = [
+  'dnscry.pt-istanbul-ipv4', 'cs-nyc', 'cs-ore', 'dnscry.pt-portland-ipv4',
+  'dnscry.pt-phoenix-ipv4', 'dnscry.pt-geneva-ipv4', 'dnscry.pt-frankfurt-ipv4',
+  'dnscry.pt-paris-ipv4', 'dnscry.pt-vienna-ipv4', 'cs-tokyo',
+  'dnscry.pt-sydney02-ipv4', 'dnscry.pt-fujairah-ipv4', 'dnscry.pt-bogota-ipv4',
+]
+
+# Only DNSCrypt servers: those are the ones that can be anonymized via relays.
+# Plain DoH would expose the client IP to the target resolver (no relay hop),
+# which defeats the anonymization goal, so it stays off. (ODoH is the DoH-family
+# equivalent that *can* be relayed — see the optional block at the bottom.)
+dnscrypt_servers = true
+doh_servers      = false
+
+# Quality bar applied worldwide: validated DNSSEC, no logging, no filtering.
+require_dnssec   = true
+require_nolog    = true
+require_nofilter = true
+
+# IPv6: off by default for predictability (many gateways lack working v6, and
+# probing dead v6 servers slows startup). Flip both to true if you have v6.
+ipv6_servers = false
+block_ipv6   = false
+
+## ---- Latency vs. availability --------------------------------------------
+# 'p2' = pick uniformly between the 2 lowest-latency servers (good privacy +
+# resilience). For lowest latency use 'p2'/'first'; for spreading load use 'ph'
+# (fastest half) or a number N (fastest N). The estimator keeps re-ranking by
+# live latency so a region change or an outage self-corrects.
+lb_strategy  = 'p2'
+lb_estimator = true
+
+# Drop a server from rotation after this many consecutive failures, then retry.
+# Keeps a flaky/over-loaded resolver from stalling lookups.
+timeout                 = 2500
+keepalive               = 30
+cert_refresh_delay      = 240
+
+## ---- Cache (kept small for the memory cap) -------------------------------
+cache              = true
+cache_size         = 256
+cache_min_ttl      = 600
+cache_max_ttl      = 86400
+cache_neg_min_ttl  = 60
+cache_neg_max_ttl  = 600
+
+## ---- Bootstrap / connectivity (global anycast, works in any region) ------
+# Used only to (a) detect connectivity and (b) resolve source/relay hostnames
+# when a stamp lacks an IP. These are global anycast addresses reachable
+# worldwide; they are NOT used for your actual queries.
+bootstrap_resolvers = ['9.9.9.9:53', '1.1.1.1:53', '8.8.8.8:53']
+ignore_system_dns   = true
+netprobe_address    = '9.9.9.9:53'
+netprobe_timeout    = 60
+
+log_level = 2
+
+## ---- Anonymized DNS -------------------------------------------------------
+# A relay hides the client IP from the resolver. But anonymity only holds if the
+# RELAY and the RESOLVER are run by DIFFERENT operators — otherwise that single
+# operator sees the client IP (at the relay) AND the query (at the resolver) and
+# can correlate them. dnscrypt-proxy will NOT enforce this for you, so we do NOT
+# use a wildcard `server_name='*'` (which could pick a same-operator relay).
+# Instead each resolver is routed only through relays run by OTHER entities.
+#
+# Operator groups in our pinned set (verified against public-resolvers.md /
+# relays.md — re-check if you change servers):
+#   * "dnscry.pt-*"  -> operated by dnscry.pt      => relay via NON-dnscry.pt
+#   * "cs-*"         -> operated by cryptostorm.is  => relay via NON-cryptostorm
+# Relays we draw from, by operator:
+#   anon-cs-*         : cryptostorm.is  (SAME operator as the cs-* resolvers, so
+#                       cs-* resolvers must NOT be routed through anon-cs-* relays)
+#   anon-scaleway-ams : DNSCrypt project   anon-plan9-ny : plan9   anon-tiarap : tiar.app
+# Each `via` list below deliberately excludes the resolver's own operator and
+# still spans several regions so the latency estimator has a fast path to pick.
+# skip_incompatible drops any (server,relay) pair the relay can't carry.
+[anonymized_dns]
+skip_incompatible = true
+routes = [
+  # --- dnscry.pt resolvers  ->  via cryptostorm(anon-cs-*) / scaleway / plan9 / tiarap (never dnscry.pt) ---
+  { server_name = 'dnscry.pt-istanbul-ipv4',  via = ['anon-cs-serbia','anon-cs-de','anon-scaleway-ams','anon-plan9-ny'] },
+  { server_name = 'dnscry.pt-geneva-ipv4',    via = ['anon-cs-nl','anon-cs-de','anon-cs-ch','anon-scaleway-ams','anon-plan9-ny'] },
+  { server_name = 'dnscry.pt-frankfurt-ipv4', via = ['anon-cs-nl','anon-cs-london','anon-scaleway-ams','anon-plan9-ny','anon-tiarap'] },
+  { server_name = 'dnscry.pt-paris-ipv4',     via = ['anon-cs-nl','anon-cs-de','anon-scaleway-ams','anon-plan9-ny'] },
+  { server_name = 'dnscry.pt-vienna-ipv4',    via = ['anon-cs-de','anon-cs-se','anon-scaleway-ams','anon-plan9-ny'] },
+  { server_name = 'dnscry.pt-portland-ipv4',  via = ['anon-plan9-ny','anon-cs-nyc','anon-scaleway-ams','anon-tiarap'] },
+  { server_name = 'dnscry.pt-phoenix-ipv4',   via = ['anon-plan9-ny','anon-cs-nyc','anon-scaleway-ams','anon-tiarap'] },
+  { server_name = 'dnscry.pt-bogota-ipv4',    via = ['anon-plan9-ny','anon-cs-nyc','anon-scaleway-ams'] },
+  { server_name = 'dnscry.pt-sydney02-ipv4',  via = ['anon-tiarap','anon-cs-sg','anon-cs-tokyo','anon-scaleway-ams'] },
+  { server_name = 'dnscry.pt-fujairah-ipv4',  via = ['anon-tiarap','anon-cs-sg','anon-scaleway-ams','anon-cs-nl'] },
+  # --- cs-* resolvers  ->  via scaleway / plan9 / tiarap only (never another cs-*) ---
+  { server_name = 'cs-nyc',                   via = ['anon-scaleway-ams','anon-plan9-ny','anon-tiarap'] },
+  { server_name = 'cs-ore',                   via = ['anon-scaleway-ams','anon-plan9-ny','anon-tiarap'] },
+  { server_name = 'cs-tokyo',                 via = ['anon-scaleway-ams','anon-plan9-ny','anon-tiarap'] },
+]
+
+## ---- Sources --------------------------------------------------------------
+[sources.public-resolvers]
+urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md']
+cache_file = '/tmp/anondns/public-resolvers.md'
+minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+refresh_delay = 73
+
+[sources.relays]
+urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/relays.md']
+cache_file = '/tmp/anondns/relays.md'
+minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+refresh_delay = 73
+
+## ---- Optional: ODoH (Oblivious DoH) --------------------------------------
+# ODoH is the DoH-family transport that can also be relayed for anonymity.
+# Enabling it widens availability. To use it: set doh_servers = true above
+# (ODoH targets are advertised as DoH-family), uncomment these two sources, and
+# add ODoH relays to the routes via-list (their names start with 'odohrelay-').
+#
+# [sources.odoh-servers]
+# urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/odoh-servers.md']
+# cache_file = '/tmp/anondns/odoh-servers.md'
+# minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+# refresh_delay = 73
+#
+# [sources.odoh-relays]
+# urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/odoh-relays.md']
+# cache_file = '/tmp/anondns/odoh-relays.md'
+# minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+# refresh_delay = 73
