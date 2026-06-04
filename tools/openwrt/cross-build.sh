@@ -65,7 +65,11 @@ pkgdir_dnsdist="$(docker run --rm "$IMG" sh -c \
 docker cp "$cid:$pkgdir_dnsdist" "$DEST_BIN/dnsdist"
 tc_strip="$(docker run --rm "$IMG" sh -c \
 	'ls /builder/staging_dir/toolchain-*/bin/arm-openwrt-linux-strip 2>/dev/null | head -1')"
-docker run --rm -v "$DEST_BIN:/w" "$IMG" "$tc_strip" --strip-all /w/dnsdist
+# Run as the host uid:gid so the bind-mounted /w (owned by the invoking user) is
+# writable — strip writes its output via a temp file in that dir. The base SDK image
+# runs as `buildbot`, whose uid only coincidentally matches some hosts; on a CI runner
+# it doesn't, and strip fails with "could not create temporary file".
+docker run --rm --user "$(id -u):$(id -g)" -v "$DEST_BIN:/w" "$IMG" "$tc_strip" --strip-all /w/dnsdist
 chmod 0755 "$DEST_BIN/dnsdist" "$DEST_BIN/dnscrypt-proxy"
 
 echo "==> [5/6] resolve shared-lib closure (both binaries) into $DEST_LIB"
