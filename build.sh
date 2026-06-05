@@ -28,11 +28,16 @@ chmod 0755 "$ROOT"/package/data/bin/*.sh 2>/dev/null || true
 chmod 0755 "$ROOT"/package/data/opt/anondns/bin/* 2>/dev/null || true
 
 # control.tar.gz
-# Value is in bytes. `awk 1` guarantees a trailing newline before we append.
+# `awk 1` guarantees a trailing newline on control before we copy it.
 awk 1 "$ROOT/package/control" > "$STAGE/ctrl/control"
 sed -i "s/^Version:.*/Version: $VER/" "$STAGE/ctrl/control"
-isize=$(du -sb "$ROOT/package/data" | cut -f1)
-printf 'Installed-Size: %s\n' "$isize" >> "$STAGE/ctrl/control"
+# DO NOT emit Installed-Size. The device's `/` is read-only dual-bank ubifs, so
+# statvfs reports 0 KB free; with a known installed size, opkg's
+# verify_pkg_installable fails ("Only have 0kb available on filesystem /") and
+# zyeed reports DU fault 9018. opkg skips that check only when installed_size==0
+# (i.e. the field is absent). zyeed runs plain `opkg --nodeps install` with no
+# --force-space to inject, so the field must never be present. (opkg does not
+# estimate size from data.tar.gz, so absent => 0 => check skipped.)
 [ -f "$ROOT/package/conffiles" ] && cp "$ROOT/package/conffiles" "$STAGE/ctrl/conffiles" || true
 ( cd "$STAGE/ctrl" && tar --numeric-owner --owner=0 --group=0 -czf "$STAGE/control.tar.gz" ./ )
 
