@@ -16,8 +16,14 @@ WORK="$HERE/.out"                             # extraction scratch (gitignored)
 DEST_BIN="$REPO/package/data/opt/anondns/bin"
 DEST_LIB="$REPO/package/data/opt/anondns/lib"
 
-echo "==> [1/6] docker build SDK image ($IMG) — first run compiles boost/openssl/dnsdist, be patient"
-docker build -t "$IMG" "$HERE"
+# Skip the build if the image is already present (e.g. CI pulled it from GHCR, or
+# a prior local run built it). Set FORCE_SDK_BUILD=1 to rebuild regardless.
+if [ "${FORCE_SDK_BUILD:-0}" != 1 ] && docker image inspect "$IMG" >/dev/null 2>&1; then
+	echo "==> [1/6] SDK image ($IMG) already present — skipping build (FORCE_SDK_BUILD=1 to rebuild)"
+else
+	echo "==> [1/6] docker build SDK image ($IMG) — first run compiles boost/openssl/dnsdist, be patient"
+	docker build -t "$IMG" "$HERE"
+fi
 
 echo "==> [2/6] extract .ipk artifacts + toolchain libs from the image"
 rm -rf "$WORK"; mkdir -p "$WORK/ipks" "$WORK/rootfs" "$WORK/toolchain"

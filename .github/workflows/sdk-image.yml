@@ -1,0 +1,58 @@
+name: build-sdk-image
+
+# Builds the OpenWrt SDK cross-build image and pushes it to GHCR so the release
+# workflow can PULL it (~minutes) instead of compiling boost/openssl/dnsdist from
+# source (~50 min) on every run.
+#
+# The image is tagged with a 16-hex digest of the Dockerfile, so the release
+# workflow can pull the EXACT image matching the Dockerfile it has checked out
+# (and fall back to a local build if no match exists — never a stale :latest).
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'tools/openwrt/Dockerfile'
+      - '.github/workflows/sdk-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90 # cold build compiles boost/openssl/dnsdist
+    steps:
+      - uses: actions/checkout@v6
+
+      # The SDK image + build tree is large; reclaim runner disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Image name + Dockerfile digest
+        id: meta
+        run: |
+          echo "image=$(echo "ghcr.io/${{ github.repository_owner }}/anondns-sdk" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "tag=$(sha256sum tools/openwrt/Dockerfile | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build & push SDK image
+        uses: docker/build-push-action@v6
+        with:
+          context: tools/openwrt
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
