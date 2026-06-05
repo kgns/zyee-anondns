@@ -79,9 +79,10 @@ jobs:
 
       - name: Smoke-test binaries under qemu (arm)
         run: |
-          cd package/data/opt/anondns
-          qemu-arm-static lib/ld-musl-armhf.so.1 --library-path lib bin/dnsdist --version
-          qemu-arm-static lib/ld-musl-armhf.so.1 --library-path lib bin/dnscrypt-proxy -version
+          sudo mkdir -p /opt/anondns
+          sudo ln -sfn "$PWD/package/data/opt/anondns/lib" /opt/anondns/lib
+          qemu-arm-static package/data/opt/anondns/bin/dnsdist --version
+          qemu-arm-static package/data/opt/anondns/bin/dnscrypt-proxy -version
 
       - name: Checksums
         run: sha256sum anondns_*_arm_cortex-a7.ipk | tee SHA256SUMS
